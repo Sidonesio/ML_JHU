@@ -1,0 +1,194 @@
+---
+title: "Predicting how well people perform barbell"
+author: "Sidney S. P. Bisssoli"
+date: "16/02/2021"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+## Executive Summary
+
+Using devices such as *Jawbone Up*, *Nike FuelBand* and *Fitbit*, it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks.
+  
+In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+Data set was subset in three subsamples. First, it was selected the possible best predictors. After that, four models were fitted: *Classification Tree*; *Random Forest*; *Boosting with Trees*; and a *Combined Model* from previous ones. *Random Forest* was the algorithm with the best accuracy (0.9976). *Combined model* got a very poor performance on validation data set, probably due to overfitting.
+
+## Part I: Loading and Preparing Data Set
+
+First, we need to load and install (if necessary) the packages that we will be required for this project.
+```{r packages}
+# packages' name
+packages <- c("caret","dplyr","lubridate")
+
+# install packages if they have not been installed yet
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packages[!installed_packages])
+}
+
+# load packages
+invisible(lapply(packages, library, character.only = TRUE))
+```
+Then, let's load the data:
+```{r load}
+# store URL as an object in R
+URL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv" 
+
+# download file
+download.file(URL, destfile = "./dataAll.csv")
+
+# read/load data into R workspace
+dataAll <- read.csv2("./dataAll.csv", sep=",")
+```
+How does this data look like?
+```{r structure}
+# view data structure
+str(dataAll, list.len=ncol(dataAll))
+```
+Variables' class are not properly set up. Let's fix it:
+```{r class}
+# set proper class to variables
+nonNumeric <- c("user_name","cvtd_timestamp","new_window","classe")
+dataAll <- dataAll %>% 
+  mutate_at(vars(-all_of(nonNumeric)), as.numeric)
+factorVar <- c("user_name","new_window","classe")
+dataAll <- dataAll %>% 
+  mutate_at(vars(all_of(factorVar)), as.factor)
+dataAll$cvtd_timestamp <- dmy_hm(dataAll$cvtd_timestamp)
+```
+Before any preprocessing, let's partitionate data in three others. Training, test and validation data sets will be called *data1*, *data2* and *data3*, respectivelly.
+```{r partitionate}
+# partitionate data
+set.seed(12367)
+inBuild <- createDataPartition(y=dataAll$classe, p=0.7, list=FALSE) 
+data3 <- dataAll[-inBuild,] 
+buildData <- dataAll[inBuild,] 
+set.seed(4257)
+inTrain <- createDataPartition(y=buildData$classe, p=0.7, list=FALSE)
+data1 <- buildData[inTrain,]
+data2 <- buildData[-inTrain,]
+```
+These are the number of observations and variables (rows and columns) from the three data sets:
+```{r dimensions}
+# dimensions of data sets
+cbind(c("Data Set","Data 1","Data 2","Data 3"),
+      rbind(c("Rows", "Columns"),
+            dim(data1),
+            dim(data2),
+            dim(data3)))
+```
+
+
+## Part II: Preprocessing the training data set
+
+Now that we got the three data sets in which we are going to work on, we need to run some type of preparation on the training data set. It is a huge data frame, with lot's of variables (160), we need to build some strategy to approach prediction modelling.
+
+The first technique will be removing variables that has near zero variance:
+```{r nzv}
+# exclude variables with near zero variation
+nzv <- nearZeroVar(data1)
+data1 <- data1[,-nzv]
+```
+Secondly, we will remove all variables that has more than 50% of missing values (NAs), because probably imputation would not be so reliable in this case:
+```{r remove NA}
+# exclude variables that have high NAs
+highNA <- names(data1)[colSums(is.na(data1)) / length(data1$user_name) > 0.50]
+data1 <- data1[, !(names(data1) %in% highNA)]
+```
+Now, we are going to remove variable "X", because it does not mean anything (it just order the observations):
+```{r remove X}
+# exclude variable X
+data1 <- select(data1, -X)
+```
+Now that we did it all, let's see if there is need for NA's imputation:
+```{r imputation}
+# check if imputation is necessary
+colSums(is.na(data1)) 
+```
+No need for imputation, there are no missing values (NAs) in the data set. Even though, we have variables that are highly correlated with each other. We will remove those variables:
+```{r high correlation}
+except <- c("user_name","cvtd_timestamp","classe")
+temp1 <- data1[,!(names(data1) %in% except)]
+temp1Cor <- cor(temp1)
+highlyCor <- findCorrelation(temp1Cor, cutoff = .75) 
+temp2 <- temp1[,-highlyCor]
+temp2Cor <- cor(temp2)
+data1 <- cbind(temp2, select(data1, c("user_name","cvtd_timestamp","classe")))
+```
+Now we can model.
+
+## Part III: Modeling
+
+First, we will model using **Classification Tree** method: 
+```{r CT}
+# fit model using Classification Tree method
+set.seed(124589)
+modCT <- train(classe ~ ., method="rpart", data=data1)
+modCT$finalModel
+
+# apply predictions to the test data set
+predCT <- predict(modCT, newdata=data2)
+```
+Second modelling strategy will use **Random Forest** method:
+```{r RF}
+set.seed(3697)
+modRF <- train(classe ~ ., data=data1, 
+               method="rf",
+               trControl=trainControl("cv"),
+               number=3)
+modRF$finalModel
+
+# apply predictions to the test data set
+predRF <- predict(modRF, newdata=data2)
+```
+Third model will be **Boosting method with trees**:
+```{r Boost}
+# fit a boosting method with trees
+set.seed(4501)
+modBoost <- train(classe ~ ., method="gbm", data=data1, verbose=FALSE)
+modBoost
+
+# apply predictions to the test data set
+predBoost <- predict(modBoost, newdata=data2)
+```
+Finally, let's combine all three models:
+```{r combined}
+# create a dataframe with all predictors and outcome
+dataAllpred <- data.frame(predCT, predRF, predBoost, classe=data2$classe)
+
+# fit a model that will be a combination from the three models
+set.seed(60376)
+modAll <- train(classe ~., method="gam", data=dataAllpred)
+```
+Now that we run four models (in fact, three models and a combined one), we are going to evaluate them. First, we will get predicted values on the validation data set:
+```{r predicted}
+# apply predictions from 3 models on data3
+predCT3 <- predict(modCT, data3)
+predRF3 <- predict(modRF, data3)
+predBoost3 <- predict(modBoost, data3)
+
+# create data frame with 3 predictors
+dataFinal <- data.frame(predCT=predCT3, 
+                        predRF=predRF3, 
+                        predBoost=predBoost3)
+# get predictions from combined model on validation data set
+predAll3 <- predict(modAll, dataFinal)
+```
+Finally, let's evaluate the accuracy for the four models
+```{r accuracy}
+# evaluate all models
+cmCT3 <- confusionMatrix(predCT3, data3$classe)
+cmRF3 <- confusionMatrix(predRF3, data3$classe)
+cmBoost3 <- confusionMatrix(predBoost3, data3$classe)
+cmAll3 <- confusionMatrix(predAll3, data3$classe)
+cbind(c("Classification Tree","Random Forest","Boosting", "Combined"),
+      rbind(cmCT3$overall["Accuracy"],
+      cmRF3$overall["Accuracy"],
+      cmBoost3$overall["Accuracy"],
+      cmAll3$overall["Accuracy"]))
+```
+As we can see, **Random Forest** revealed to be the best modelling strategy with this data set.
